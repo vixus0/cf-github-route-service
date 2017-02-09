@@ -1,0 +1,10 @@
+---
+applications:
+ - name: basic-auth-route-service
+   memory: 64M
+   disk_quota: 100M
+   instances: 2
+   buildpack: go_buildpack
+   env:
+     GOVERSION: go1.10
+     GOPACKAGENAME: github.com/alext/cf_basic_auth_route_service

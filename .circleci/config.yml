@@ -1,0 +1,10 @@
+version: 2
+jobs:
+  build:
+    docker:
+      - image: circleci/golang:1.10
+
+    working_directory: /go/src/github.com/alphagov/paas-cf_basic_auth_route_service
+    steps:
+      - checkout
+      - run: go test -v ./...
