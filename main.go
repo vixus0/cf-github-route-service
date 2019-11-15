@@ -10,18 +10,20 @@ import (
 func main() {
 	addr := ":" + os.Getenv("PORT")
 
-	username := os.Getenv("AUTH_USERNAME")
-	password := os.Getenv("AUTH_PASSWORD")
+	hostname := os.Getenv("HOSTNAME")
+	client_id := os.Getenv("CLIENT_ID")
+	client_secret := os.Getenv("CLIENT_SECRET")
+	github_org := os.Getenv("GITHUB_ORG")
 
-	if username == "" || password == "" {
-		log.Fatal("Must provide auth creds in AUTH_USERNAME and AUTH_PASSWORD")
+	if hostname == "" || client_id == "" || client_secret == "" || github_org == "" {
+		log.Fatal("Must provide HOSTNAME, CLIENT_ID, CLIENT_SECRET and GITHUB_ORG")
 	}
 
 	if os.Getenv("SKIP_SSL_VALIDATION") != "" {
 		http.DefaultTransport.(*http.Transport).TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
 	}
 
-	proxy := NewAuthProxy(username, password)
+	proxy := NewAuthProxy(hostname, client_id, client_secret, github_org)
 
 	err := http.ListenAndServe(addr, proxy)
 	if err != nil {
