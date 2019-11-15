@@ -1,6 +1,6 @@
 ---
 applications:
- - name: github-oauth-route-service
+ - name: ((name))
    memory: 64M
    disk_quota: 100M
    instances: 2
@@ -8,3 +8,7 @@ applications:
    env:
      GOVERSION: go1.12
      GOPACKAGENAME: github.com/vixus0/cf-github-route-service
+     HOSTNAME: ((hostname))
+     CLIENT_ID: ((client-id))
+     CLIENT_SECRET: ((client-secret))
+     GITHUB_ORG: ((github-org))
