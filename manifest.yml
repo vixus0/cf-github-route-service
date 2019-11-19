@@ -3,8 +3,9 @@ applications:
  - name: ((name))
    memory: 64M
    disk_quota: 100M
-   instances: 2
-   buildpack: go_buildpack
+   instances: 1
+   buildpacks:
+     - go_buildpack
    env:
      GOVERSION: go1.12
      GOPACKAGENAME: github.com/vixus0/cf-github-route-service

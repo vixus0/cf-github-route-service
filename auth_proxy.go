@@ -2,24 +2,24 @@ package main
 
 import (
 	"crypto/rand"
-	"encoding/hex"
+	"crypto/rsa"
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"strings"
+
+	"gopkg.in/square/go-jose.v2"
 )
 
 const (
 	CF_FORWARDED_URL_HEADER = "X-CF-Forwarded-Url"
-	ROUTE_SERVICE_TOKEN     = "X-GitHub-Token"
-	COOKIE_STATE            = "_github_oauth_state"
 	COOKIE_TOKEN            = "_github_oauth_token"
-	COOKIE_FWD              = "_github_oauth_forward"
 
-	OAUTH_PATH          = "/__oauth"
-	OAUTH_CALLBACK_PATH = "/__oauth/callback"
+	OAUTH_PATH          = "__oauth"
+	OAUTH_CALLBACK_PATH = "__oauth/callback"
 )
 
 type AuthProxy struct {
@@ -29,10 +29,16 @@ type AuthProxy struct {
 	github_org     string
 	github_url     string
 	github_api_url string
+	private_key    *rsa.PrivateKey
 	backend        http.Handler
 }
 
 func NewAuthProxy(hostname, client_id, client_secret, github_org string) http.Handler {
+	private_key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		panic("key error: " + err.Error())
+	}
+
 	return &AuthProxy{
 		hostname:       hostname,
 		client_id:      client_id,
@@ -40,11 +46,12 @@ func NewAuthProxy(hostname, client_id, client_secret, github_org string) http.Ha
 		github_org:     github_org,
 		github_url:     "https://github.com",
 		github_api_url: "https://api.github.com",
+		private_key:    private_key,
 		backend:        buildBackendProxy(),
 	}
 }
 
-func OverrideAuthProxy(hostname, client_id, client_secret, github_org, github_url, github_api_url string) http.Handler {
+func OverrideAuthProxy(hostname, client_id, client_secret, github_org, github_url, github_api_url string, private_key *rsa.PrivateKey) http.Handler {
 	return &AuthProxy{
 		hostname:       hostname,
 		client_id:      client_id,
@@ -52,6 +59,7 @@ func OverrideAuthProxy(hostname, client_id, client_secret, github_org, github_ur
 		github_org:     github_org,
 		github_url:     github_url,
 		github_api_url: github_api_url,
+		private_key:    private_key,
 		backend:        buildBackendProxy(),
 	}
 }
@@ -76,33 +84,57 @@ func buildBackendProxy() http.Handler {
 	}
 }
 
-func randomHex(n int) (string, error) {
-	//-- https://sosedoff.com/2014/12/15/generate-random-hex-string-in-go.html
-	bytes := make([]byte, n)
-	if _, err := rand.Read(bytes); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(bytes), nil
-}
-
-func setCookie(w http.ResponseWriter, name string, value string) {
-	http.SetCookie(w, &http.Cookie{
+func newCookie(name string, value string) *http.Cookie {
+	return &http.Cookie{
 		Name:     name,
 		Value:    value,
 		Secure:   true,
 		HttpOnly: true,
 		MaxAge:   3600,
-	})
+	}
 }
 
-func unsetCookie(w http.ResponseWriter, name string) {
-	http.SetCookie(w, &http.Cookie{
+func delCookie(name string) *http.Cookie {
+	return &http.Cookie{
 		Name:     name,
 		Value:    "",
 		Secure:   true,
 		HttpOnly: true,
 		MaxAge:   -1,
-	})
+	}
+}
+
+func EncryptJWE(plaintext string, key *rsa.PrivateKey) (string, error) {
+	encrypter, err := jose.NewEncrypter(jose.A128GCM, jose.Recipient{Algorithm: jose.RSA_OAEP, Key: &key.PublicKey}, nil)
+	if err != nil {
+		return "", err
+	}
+
+	obj, err := encrypter.Encrypt([]byte(plaintext))
+	if err != nil {
+		return "", err
+	}
+
+	serialised, err := obj.CompactSerialize()
+	if err != nil {
+		return "", err
+	}
+
+	return serialised, nil
+}
+
+func DecryptJWE(serialised string, key *rsa.PrivateKey) (string, error) {
+	obj, err := jose.ParseEncrypted(serialised)
+	if err != nil {
+		return "", err
+	}
+
+	decrypted, err := obj.Decrypt(key)
+	if err != nil {
+		return "", err
+	}
+
+	return string(decrypted), nil
 }
 
 func (a *AuthProxy) isMember(token string) (bool, error) {
@@ -130,6 +162,10 @@ func (a *AuthProxy) isMember(token string) (bool, error) {
 		return false, err
 	}
 
+	if data["login"] == nil {
+		return false, fmt.Errorf("github api error: %s", string(body))
+	}
+
 	user := data["login"].(string)
 
 	// check user is in right org
@@ -146,25 +182,7 @@ func (a *AuthProxy) isMember(token string) (bool, error) {
 }
 
 func (a *AuthProxy) ServeHTTP(w http.ResponseWriter, req *http.Request) {
-	switch req.URL.Path {
-	case OAUTH_PATH:
-		// redirect to oauth provider
-		state, err := randomHex(16)
-		if err != nil {
-			http.Error(w, "Error: "+err.Error(), http.StatusInternalServerError)
-			return
-		}
-
-		redirect_url := fmt.Sprintf(
-			"%s/login/oauth/authorize?client_id=%s&redirect_uri=%s/oauth/callback&allow_signup=false&state=%s&scope=read:org",
-			a.github_url,
-			a.client_id,
-			a.hostname,
-			state,
-		)
-
-		setCookie(w, COOKIE_STATE, state)
-		http.Redirect(w, req, redirect_url, http.StatusSeeOther)
+	switch strings.TrimPrefix(req.URL.Path, "/") {
 	case OAUTH_CALLBACK_PATH:
 		// deal with response
 		query := req.URL.Query()
@@ -174,18 +192,12 @@ func (a *AuthProxy) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			return
 		}
 
-		state_cookie, err := req.Cookie(COOKIE_STATE)
-
-		if err != nil {
-			http.Error(w, "Cookie error: "+err.Error(), http.StatusBadRequest)
-			return
-		}
-
 		code := query.Get("code")
 		state := query.Get("state")
 
-		if state != state_cookie.Value {
-			http.Error(w, fmt.Sprintf("State mismatch: %s %s", state, state_cookie.Value), http.StatusBadRequest)
+		forwardedURL, err := DecryptJWE(state, a.private_key)
+		if err != nil {
+			http.Error(w, "State error: "+err.Error(), http.StatusBadRequest)
 			return
 		}
 
@@ -196,11 +208,10 @@ func (a *AuthProxy) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 				"client_id":     {a.client_id},
 				"client_secret": {a.client_secret},
 				"code":          {code},
-				"redirect_uri":  {a.hostname + OAUTH_CALLBACK_PATH},
+				"redirect_uri":  {fmt.Sprintf("%s/%s", a.hostname, OAUTH_CALLBACK_PATH)},
 				"state":         {state},
 			},
 		)
-
 		if err != nil {
 			http.Error(w, "Error: "+err.Error(), http.StatusBadRequest)
 			return
@@ -208,35 +219,40 @@ func (a *AuthProxy) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 
 		defer resp.Body.Close()
 		body, err := ioutil.ReadAll(resp.Body)
-
 		if err != nil {
 			http.Error(w, "Error: "+err.Error(), http.StatusBadRequest)
 			return
 		}
 
 		values, err := url.ParseQuery(string(body))
-
 		if err != nil {
 			http.Error(w, "Error: "+err.Error(), http.StatusBadRequest)
 			return
 		}
 
 		token := values.Get("access_token")
-
 		if token == "" {
 			http.Error(w, "OAuth token error: "+string(body), http.StatusBadRequest)
 			return
 		}
 
-		fwd_cookie, err := req.Cookie(COOKIE_FWD)
+		encryptedToken, err := EncryptJWE(token, a.private_key)
+		if err != nil {
+			http.Error(w, "Error: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		parsedForwardURL, err := url.Parse(forwardedURL)
 		if err != nil {
 			http.Error(w, "Error: "+err.Error(), http.StatusBadRequest)
 			return
 		}
 
-		setCookie(w, COOKIE_TOKEN, token)
-		unsetCookie(w, COOKIE_FWD)
-		http.Redirect(w, req, fwd_cookie.Value, http.StatusSeeOther)
+		values = parsedForwardURL.Query()
+		values.Add("__token", encryptedToken)
+		parsedForwardURL.RawQuery = values.Encode()
+
+		http.Redirect(w, req, parsedForwardURL.String(), http.StatusSeeOther)
 	default:
 		forwardedURL := req.Header.Get(CF_FORWARDED_URL_HEADER)
 
@@ -245,37 +261,72 @@ func (a *AuthProxy) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			return
 		}
 
-		_, err := url.Parse(forwardedURL)
-
+		parsedForwardURL, err := url.Parse(forwardedURL)
 		if err != nil {
 			http.Error(w, "Invalid forward URL: "+err.Error(), http.StatusBadRequest)
 			return
 		}
 
-		// check token cookie
-		token_cookie, err := req.Cookie(COOKIE_TOKEN)
+		// if __token in query, redirect to forwarded URL with token cookie set
+		if encryptedToken := parsedForwardURL.Query().Get("__token"); encryptedToken != "" {
+			token, err := DecryptJWE(encryptedToken, a.private_key)
+			if err != nil {
+				http.Error(w, "Error: "+err.Error(), http.StatusInternalServerError)
+				return
+			}
 
+			// remove __token from query to avoid redirect loop
+			values := parsedForwardURL.Query()
+			values.Del("__token")
+			parsedForwardURL.RawQuery = values.Encode()
+
+			http.SetCookie(w, newCookie(COOKIE_TOKEN, token))
+			http.Redirect(w, req, parsedForwardURL.String(), http.StatusSeeOther)
+			return
+		}
+
+		// check if token cookie set
+		token_cookie, err := req.Cookie(COOKIE_TOKEN)
 		if err != nil || token_cookie.Value == "" {
-			setCookie(w, COOKIE_FWD, forwardedURL)
-			http.Redirect(w, req, "/oauth", http.StatusSeeOther)
+			// if no cookie or bad cookie, redirect to oauth flow
+			state, err := EncryptJWE(forwardedURL, a.private_key)
+			if err != nil {
+				http.Error(w, "Error: "+err.Error(), http.StatusInternalServerError)
+				return
+			}
+
+			redirect_url := fmt.Sprintf(
+				"%s/login/oauth/authorize?client_id=%s&redirect_uri=%s/%s&allow_signup=false&state=%s&scope=read:org",
+				a.github_url,
+				a.client_id,
+				a.hostname,
+				OAUTH_CALLBACK_PATH,
+				state,
+			)
+
+			http.Redirect(w, req, redirect_url, http.StatusSeeOther)
 			return
 		}
 
 		// check user is authorised
 		member, err := a.isMember(token_cookie.Value)
-
 		if err != nil {
+			http.SetCookie(w, delCookie(COOKIE_TOKEN))
 			http.Error(w, "Error: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
-
 		if member == false {
-			http.Error(w, "Unauthorised", http.StatusUnauthorized)
+			message := fmt.Sprintf(
+				`Unauthorised, review OAuth app permissions: %s/settings/connections/applications/%s`,
+				a.github_url,
+				a.client_id,
+			)
+			http.SetCookie(w, delCookie(COOKIE_TOKEN))
+			http.Error(w, message, http.StatusUnauthorized)
 			return
 		}
 
-		// forward to downstream with token
-		req.Header.Add(ROUTE_SERVICE_TOKEN, token_cookie.Value)
+		// if all good, redirect to original destination
 		a.backend.ServeHTTP(w, req)
 	}
 }
