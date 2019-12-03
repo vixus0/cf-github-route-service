@@ -1,0 +1,22 @@
+language: go
+
+stages:
+  - name: test
+  - name: build
+    if: (branch = master) and (tag =~ ^v)
+
+jobs:
+  include:
+    - stage: test
+      script: go test
+    - stage: build
+      script: go build
+
+deploy:
+  provider: releases
+  token:
+    secure: m1A5G217JkXioWZkVr52CMpJ0pXLMOe16rLzqDCuaYW75yJaps3l3Go097i8rLoINZPd8MBpHEZ6rUB3on6Xam+Vrm6JgrXMsYlZlRQVcXGa4SA7cXcfOwZoi19W0zS/pGFGRqp9z6EXtEg/eG6ZIgaIW1bQbwAEhb9V4CRZqXZa5bGKjoJmJGobZ3Gi3b37Xt/mJVMFIXfbbw/X/B2fC8I1G4DPH5ZK892EtJBHseVDWenNczdWiXAKicwzM9LeK4IS+UvMrhFYJcRuloapl+0khZ3E7McvSsIkjKFIEL6nUoRybu066uVmwZeOKyifcpVPpmbTWBSwrbtDHs+8NHicqPYhiqJvJ29waH6aA6xXGV2/fc4VLqh3uQhLEPFvJ0M07JEfCH1FPbdlMzRjPl44S1jUFdgWY5bpK0b2X34r2USu1p6sTX2oDOGGfiKJ9PzZqDS7xAMIG9ozOaXOa+zHMaNO3AMQ6/3/SeJWk9nRW/mEYbe2/1rEkA7hkcuAiscDsYQZ9YlMi4OXqjZzKApVHEEW+Akg6rSFw3tP3F6VYstkoP9LIfjDeihQzh/9gkf91qpsRdZb2s0OKv8pIXkbKa4/u27oJwMeXIxXNTV9DulgxGcaVI73jaf3Rs8HUyVzvVweDz0Z2M2F1wJLNzghorPq7LSZjAxdSQOuhKM=
+  file: cf-github-route-service
+  on:
+    repo: vixus0/cf-github-route-service
+    tags: true
