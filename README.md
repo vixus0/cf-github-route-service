@@ -1,5 +1,7 @@
 # CloudFoundry GitHub OAuth Route Service
 
+[![Build Status](https://travis-ci.com/vixus0/cf-github-route-service.svg?branch=master)](https://travis-ci.com/vixus0/cf-github-route-service)
+
 This is a Cloud Foundry route service that authenticates people using GitHub OAuth.
 You can use it when you want to restrict access to your Cloud Foundry app based on GitHub organisation.
 
